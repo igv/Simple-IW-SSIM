@@ -30,7 +30,7 @@ def get_structure_tensor_evals(H, Parent, sd, t):
     # factor = 0.4142 * np.abs(np.sin(2 * angle))
     # norm = 1.0 + factor * coherence
 
-    return l1, l2
+    return l1 * (coherence + 0.1), l2 * (coherence + 0.1)
 
 def linearize(img):
     return np.where(img > 0.04045, np.power((img + 0.055) / 1.055, 2.4), img / 12.92)

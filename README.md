@@ -15,6 +15,7 @@ Traditional SSIM treats all pixels equally. IW-SSIM, however, applies Informatio
 While based on the original research by Wang and Li, simple-iw-ssim introduces several practical modifications:
 * **Simplified Information Map:** Instead of a full GSM-based statistical model, this version uses a streamlined structure tensor approach to calculate the information distribution.
 * **Linearized Workflow:** Unlike many basic implementations that work directly on gamma-corrected sRGB, this tool performs linearization and uses perceptual luminance ($L^*$).
+* **Coherence-Adjusted Weighting:** Eigenvalues are scaled by their coherence to slightly boost the relative importance of structured edges compared to chaotic textures.
 
 ## No Heavy Dependencies
 Built only on NumPy, SciPy, and Pillow. No need for massive frameworks like OpenCV or PyTorch.

@@ -52,10 +52,14 @@ def gaussian_pyramid(image, levels=6):
 def laplacian_pyramid(G_pyr, levels=5):
     L_pyr = []
     for s in range(levels):
-        l = G_pyr[s]
-        exp = np.zeros(l.shape)
-        exp[::2, ::2] = G_pyr[s+1]
-        H = l - gaussian_filter(exp, sigma=1.08, truncate=1.5) * 4.0
+        l, l2 = G_pyr[s], G_pyr[s+1]
+        h, w = l.shape
+        h2, w2 = l2.shape
+        exp = np.zeros((h, w), dtype=l.dtype)
+        h, w = min(h, h2 * 2), min(w, w2 * 2)
+        exp[0:h:2, 0:w:2] = l2[0:(h+1)//2, 0:(w+1)//2]
+        upsampled = gaussian_filter(exp, sigma=1.08, truncate=1.5) * 4.0
+        H = l - upsampled
         L_pyr.append(H)
     return L_pyr
 

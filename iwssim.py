@@ -24,13 +24,13 @@ def get_structure_tensor_evals(H, Parent, sd, t):
     delta = np.sqrt(np.maximum((trace / 2) ** 2 - det, 0))
 
     l1, l2 = trace / 2 + delta, trace / 2 - delta
-    coherence = (l1 - l2) / (l1 + l2 + 1e-6)
+    coherence = (l1 - l2) / (l1 + l2 + 1e-3)
 
-    # angle = 0.5 * np.arctan2(2 * s_xy, s_xx - s_yy)
-    # factor = 0.4142 * np.abs(np.sin(2 * angle))
-    # norm = 1.0 + factor * coherence
+    # purity = 0.1 / (l1 + l2 + 0.1)
+    # weight = np.where(coherence > purity, coherence ** 2 + 1e-3, 1)
+    weight = coherence ** 2 + 1e-3
 
-    return l1 * (coherence + 0.1), l2 * (coherence + 0.1)
+    return l1 * weight, l2 * weight
 
 def linearize(img):
     return np.where(img > 0.04045, np.power((img + 0.055) / 1.055, 2.4), img / 12.92)

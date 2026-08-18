@@ -4,50 +4,81 @@ import numpy as np
 from scipy.ndimage import gaussian_filter, zoom
 from concurrent.futures import ThreadPoolExecutor
 
-WEIGHTS = [0.0448, 0.2856, 0.3001, 0.2363, 0.1333]
+WEIGHTS = np.array([0.0448, 0.2856, 0.3001, 0.2363, 0.1333])
+WEIGHTS = WEIGHTS / np.sum(WEIGHTS)
 
-def get_structure_tensor_evals(H, Parent, sd, t):
+CHROMA_WEIGHTS = np.array([0.0, 0.0, 0.35, 0.20, 0.10])
+CHROMA_WEIGHTS = CHROMA_WEIGHTS / np.sum(CHROMA_WEIGHTS)
+
+def get_structure_tensor(H, Parent, sd, t):
     gy, gx = np.gradient(H)
-
     s_xx = gaussian_filter(gx * gx, sd, truncate=t)
     s_yy = gaussian_filter(gy * gy, sd, truncate=t)
     s_xy = gaussian_filter(gx * gy, sd, truncate=t)
-
     if Parent is not None:
         py, px = np.gradient(Parent)
         s_xx = (s_xx + gaussian_filter(px * px, sd, truncate=t)) / 2.0
         s_yy = (s_yy + gaussian_filter(py * py, sd, truncate=t)) / 2.0
         s_xy = (s_xy + gaussian_filter(px * py, sd, truncate=t)) / 2.0
-
     trace = s_xx + s_yy
     det = s_xx * s_yy - s_xy ** 2
-    delta = np.sqrt(np.maximum((trace / 2) ** 2 - det, 0))
+    delta = np.sqrt(np.maximum((trace / 2.0) ** 2 - det, 0))
+    l1, l2 = trace / 2.0 + delta, trace / 2.0 - delta
 
-    l1, l2 = trace / 2 + delta, trace / 2 - delta
     coherence = (l1 - l2) / (l1 + l2 + 1e-3)
-
-    # purity = 0.1 / (l1 + l2 + 0.1)
-    # weight = np.where(coherence > purity, coherence ** 2 + 1e-3, 1)
-    weight = coherence ** 2 + 1e-3
+    weight = coherence ** 2
 
     return l1 * weight, l2 * weight
 
 def linearize(img):
     return np.where(img > 0.04045, np.power((img + 0.055) / 1.055, 2.4), img / 12.92)
 
-def to_Luma(img):
-    return 0.2126 * img[:,:,0] + 0.7152 * img[:,:,1] + 0.0722 * img[:,:,2]
+def rgb_to_lab(img_linear, luma_only=False):
+    r, g, b = img_linear[:,:,0], img_linear[:,:,1], img_linear[:,:,2]
+    Y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b
 
-def to_L(Y):
-    return np.where(Y > 0.008856, np.power(Y, 1./3.) * 116 - 16, Y * 903.3)
+    def f(t):
+        return np.where(t > 0.008856, np.cbrt(t), 7.787 * t + 16.0 / 116.0)
 
-def gaussian_pyramid(image, levels=6):
-    pyramid = [to_L(image)]
-    current = image
+    fy = f(Y)
+    L = np.maximum(0.0, 116.0 * fy - 16.0)
+    if luma_only:
+        return L
+
+    X = 0.4124564 * r + 0.3575761 * g + 0.1804375 * b
+    Z = 0.0193339 * r + 0.1191920 * g + 0.9503041 * b
+    fx, fz = f(X / 0.95047), f(Z / 1.08883)
+    a = 500.0 * (fx - fy)
+    b = 200.0 * (fy - fz)
+    return L, a, b
+
+def gaussian_pyramid(image_linear, levels=6, luma_only=False):
+    if luma_only:
+        Y = 0.2126729 * image_linear[:,:,0] + 0.7151522 * image_linear[:,:,1] + 0.0721750 * image_linear[:,:,2]
+        def f(t):
+            return np.where(t > 0.008856, np.cbrt(t), 7.787 * t + 16.0 / 116.0)
+        gpyr_L = [np.maximum(0.0, 116.0 * f(Y) - 16.0)]
+        current = Y
+        for _ in range(levels - 1):
+            current = gaussian_filter(current, sigma=1.08, truncate=1.5)[::2, ::2]
+            gpyr_L.append(np.maximum(0.0, 116.0 * f(current) - 16.0))
+        return gpyr_L, None, None
+
+    res = rgb_to_lab(image_linear, luma_only=False)
+    gpyr_L, gpyr_a, gpyr_b = [res[0]], [res[1]], [res[2]]
+
+    current = image_linear
     for _ in range(levels - 1):
-        current = gaussian_filter(current, sigma=1.08, truncate=1.5)[::2, ::2]
-        pyramid.append(to_L(current))
-    return pyramid
+        current = np.stack([
+            gaussian_filter(current[:,:,c], sigma=1.08, truncate=1.5)[::2, ::2]
+            for c in range(3)
+        ], axis=-1)
+        res = rgb_to_lab(current, luma_only=False)
+        gpyr_L.append(res[0])
+        gpyr_a.append(res[1])
+        gpyr_b.append(res[2])
+
+    return gpyr_L, gpyr_a, gpyr_b
 
 def laplacian_pyramid(G_pyr, levels=5):
     L_pyr = []
@@ -56,46 +87,48 @@ def laplacian_pyramid(G_pyr, levels=5):
         h, w = l.shape
         h2, w2 = l2.shape
         exp = np.zeros((h, w), dtype=l.dtype)
-        h, w = min(h, h2 * 2), min(w, w2 * 2)
-        exp[0:h:2, 0:w:2] = l2[0:(h+1)//2, 0:(w+1)//2]
+        exp[0:min(h, h2*2):2, 0:min(w, w2*2):2] = l2[0:(h+1)//2, 0:(w+1)//2]
         upsampled = gaussian_filter(exp, sigma=1.08, truncate=1.5) * 4.0
         H = l - upsampled
         L_pyr.append(H)
     return L_pyr
 
-def compute_ssim_maps(lpyr1, lpyr2, sd=1.5, t=2.5):
+def compute_ssim_maps(lpyr1, lpyr2, gpyr1, gpyr2, sd=1.5, t=2.5, dyn_range=100.0):
     cs_maps = []
-    l_map = None
-    C1 = (0.01 * 100) ** 2
-    C2 = (0.03 * 100) ** 2
-
+    C1 = (0.01 * dyn_range) ** 2
+    C2 = (0.03 * dyn_range) ** 2
     for scale in range(1, 6):
         H1, H2 = lpyr1[scale-1], lpyr2[scale-1]
         mu1 = gaussian_filter(H1, sd, truncate=t)
         mu2 = gaussian_filter(H2, sd, truncate=t)
-
-        sigma1_sq = gaussian_filter(H1 * H1, sd, truncate=t) - mu1 ** 2
-        sigma2_sq = gaussian_filter(H2 * H2, sd, truncate=t) - mu2 ** 2
-        sigma12 = gaussian_filter(H1 * H2, sd, truncate=t) - mu1 * mu2
+        sigma1_sq = np.maximum(0, gaussian_filter(H1 * H1, sd, truncate=t) - mu1 ** 2)
+        sigma2_sq = np.maximum(0, gaussian_filter(H2 * H2, sd, truncate=t) - mu2 ** 2)
+        sigma12   = gaussian_filter(H1 * H2, sd, truncate=t) - mu1 * mu2
 
         cs_maps.append((2 * sigma12 + C2) / (sigma1_sq + sigma2_sq + C2))
 
-        if scale == 5:
-            l_map = (2 * mu1 * mu2 + C1) / (mu1 ** 2 + mu2 ** 2 + C1)
-
+    base1, base2 = gpyr1[4], gpyr2[4]
+    mu_base1 = gaussian_filter(base1, sd, truncate=t)
+    mu_base2 = gaussian_filter(base2, sd, truncate=t)
+    l_map = (2.0 * mu_base1 * mu_base2 + C1) / (mu_base1 ** 2 + mu_base2 ** 2 + C1)
     return cs_maps, l_map
 
-def compute_iw_maps(lpyr1, lpyr2, pyr1, sd=1.2, t=2.0):
-    iw_maps = []
+def compute_iw_maps(lpyr1, lpyr2, sd=1.2, t=2.0):
     sigma_nsq = 0.05
     eps = 1e-6
+    iw_maps = []
 
     for scale in range(1, 6):
         if scale == 5:
-            iw_maps.append(None) 
+            iw_maps.append(None)
             continue
 
         H1, H2 = lpyr1[scale-1], lpyr2[scale-1]
+        parent = lpyr1[scale]
+        zoom_factors = (H1.shape[0] / parent.shape[0], H1.shape[1] / parent.shape[1])
+        P = zoom(parent, zoom_factors, order=2)
+
+        lam1, lam2 = get_structure_tensor(H1, P, sd, t)
 
         mu1 = gaussian_filter(H1, sd, truncate=t)
         mu2 = gaussian_filter(H2, sd, truncate=t)
@@ -114,49 +147,15 @@ def compute_iw_maps(lpyr1, lpyr2, pyr1, sd=1.2, t=2.0):
         sv_sq = np.maximum(sigma2_sq - g * sigma12, 0)
         # sv_sq[sigma1_sq<sigma_nsq] *= eps
 
-        parent = lpyr1[scale]
-        zoom_factors = (H1.shape[0] / parent.shape[0], H1.shape[1] / parent.shape[1])
-        P = zoom(parent, zoom_factors, order=2)
-
-        lam1, lam2 = get_structure_tensor_evals(H1, P, sd, t)
-
-        info_dist = np.log2(1 + ((sv_sq + (1 + g ** 2) * sigma_nsq) * lam1 + sv_sq * sigma_nsq) / \
-                                (sigma_nsq ** 2)) + \
-                    np.log2(1 + ((sv_sq + (1 + g ** 2) * sigma_nsq) * lam2 + sv_sq * sigma_nsq) / \
-                                (sigma_nsq ** 2))
-
-        # info_dist = np.log2(1 + (lam1 / sigma_nsq)) + np.log2(1 + (lam2 / sigma_nsq))
-
+        info_dist = np.log2(1 + ((sv_sq + (1 + g ** 2) * sigma_nsq) * lam1 + sv_sq * sigma_nsq) / (sigma_nsq ** 2)) + \
+                    np.log2(1 + ((sv_sq + (1 + g ** 2) * sigma_nsq) * lam2 + sv_sq * sigma_nsq) / (sigma_nsq ** 2))
         info_dist[info_dist < 1e-10] = 0
         iw_maps.append(info_dist)
 
     return iw_maps
 
-def iwssim(file1, file2):
-    img1 = Image.open(file1).convert('RGB')
-    img2 = Image.open(file2).convert('RGB')
-
-    width, height = img1.size
-    img1 = np.frombuffer(img1.tobytes(), dtype=np.uint8).reshape(height, width, 3)
-    img2 = np.frombuffer(img2.tobytes(), dtype=np.uint8).reshape(height, width, 3)
-
-    Y1 = to_Luma(linearize((img1 / 255)))
-    Y2 = to_Luma(linearize((img2 / 255)))
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        f1 = executor.submit(gaussian_pyramid, Y1)
-        f2 = executor.submit(gaussian_pyramid, Y2)
-        pyr1, pyr2 = f1.result(), f2.result()
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        f1 = executor.submit(laplacian_pyramid, pyr1)
-        f2 = executor.submit(laplacian_pyramid, pyr2)
-        lpyr1, lpyr2 = f1.result(), f2.result()
-
-    cs_maps, l_map = compute_ssim_maps(lpyr1, lpyr2)
-
-    iw_maps = compute_iw_maps(lpyr1, lpyr2, pyr1)
-
+def compute_channel_iwssim(gpyr1, gpyr2, lpyr1, lpyr2, iw_maps, dyn_range=100.0, is_chroma=False):
+    cs_maps, l_map = compute_ssim_maps(lpyr1, lpyr2, gpyr1, gpyr2, dyn_range=dyn_range)
     wmcs = []
 
     for scale in range(1, 6):
@@ -167,22 +166,66 @@ def iwssim(file1, file2):
         else:
             iw = iw_maps[scale-1]
 
-        cs = cs[1:-1, 1:-1]
-        iw = iw[1:-1, 1:-1]
+        crop = 1
+        cs_crop = cs[crop:-crop, crop:-crop]
+        iw_crop = iw[crop:-crop, crop:-crop]
 
-        wmcs.append(np.sum(cs * iw) / np.sum(iw))
+        val = np.sum(cs_crop * iw_crop) / np.sum(iw_crop)
+        wmcs.append(np.clip(val, 0.0, 1.0))
 
-    score = np.prod(np.array(wmcs) ** np.array(WEIGHTS / np.sum(WEIGHTS)))
-    return score
+    weights = CHROMA_WEIGHTS if is_chroma else WEIGHTS
+    return np.prod(np.array(wmcs) ** weights)
+
+def iwssim(file1, file2, luma_only=False):
+    img1 = np.array(Image.open(file1).convert('RGB'), dtype=np.float32) / 255.0
+    img2 = np.array(Image.open(file2).convert('RGB'), dtype=np.float32) / 255.0
+
+    lin1 = linearize(img1)
+    lin2 = linearize(img2)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(gaussian_pyramid, lin1, 6, luma_only)
+        f2 = executor.submit(gaussian_pyramid, lin2, 6, luma_only)
+        (gpyr_L1, gpyr_a1, gpyr_b1), (gpyr_L2, gpyr_a2, gpyr_b2) = f1.result(), f2.result()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        f1 = executor.submit(laplacian_pyramid, gpyr_L1)
+        f2 = executor.submit(laplacian_pyramid, gpyr_L2)
+        lpyr_L1, lpyr_L2 = f1.result(), f2.result()
+
+    iw_maps_L = compute_iw_maps(lpyr_L1, lpyr_L2)
+    score_L = compute_channel_iwssim(gpyr_L1, gpyr_L2, lpyr_L1, lpyr_L2, iw_maps_L, dyn_range=100.0, is_chroma=False)
+
+    if luma_only:
+        return score_L
+
+    lpyr_a1, lpyr_a2 = laplacian_pyramid(gpyr_a1), laplacian_pyramid(gpyr_a2)
+    score_a = compute_channel_iwssim(gpyr_a1, gpyr_a2, lpyr_a1, lpyr_a2, iw_maps_L, dyn_range=100.0, is_chroma=True)
+
+    lpyr_b1, lpyr_b2 = laplacian_pyramid(gpyr_b1), laplacian_pyramid(gpyr_b2)
+    score_b = compute_channel_iwssim(gpyr_b1, gpyr_b2, lpyr_b1, lpyr_b2, iw_maps_L, dyn_range=100.0, is_chroma=True)
+
+    return 0.9 * score_L + 0.05 * score_a + 0.05 * score_b
 
 def main():
-    if len(sys.argv) < 3:
-        print("Usage: python iwssim.py <ref> <dist1> [dist2...]")
+    args = sys.argv[1:]
+    luma_only = False
+    filtered_args = []
+    for arg in args:
+        if arg in ('--luma', '--luma-only', '-l'):
+            luma_only = True
+        else:
+            filtered_args.append(arg)
+    args = filtered_args
+
+    if len(args) < 2:
+        print("Usage: python iwssim.py [--luma] <ref> <dist1> [dist2...]")
         return
 
-    for arg in sys.argv[2:]:
-        score = iwssim(sys.argv[1], arg)
-        print(f"{score:.6f}\t{arg}")
+    ref = args[0]
+    for dist in args[1:]:
+        score = iwssim(ref, dist, luma_only=luma_only)
+        print(f"{score:.6f}\t{dist}")
 
 if __name__ == '__main__':
     main()

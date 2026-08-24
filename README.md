@@ -10,9 +10,9 @@ While based on the original research by Wang and Li, simple-iw-ssim introduces s
 * **Chroma CSF Adaptation:** Bypasses high-frequency chromatic subpixel noise (Scales 1 & 2) for the a and b channels, matching the human visual system's lower spatial acuity for color.
 * **Coherence-Adjusted Weighting:** Structural tensor eigenvalues are scaled by coherence to prioritize coherent structural edges over stochastic noise.
 
-## Accuracy (TID2013)
+## Benchmark Accuracy
 
-Evaluated against the TID2013 benchmark dataset across standard distortion subsets:
+### TID2013
 
 | Subset | Accuracy |
 | :--- | :---: |
@@ -23,6 +23,15 @@ Evaluated against the TID2013 benchmark dataset across standard distortion subse
 | **New** | 0.856 |
 | **Color** | 0.863 |
 | **Full** | 0.860 |
+
+### PIPAL
+
+| Category | SRCC | PLCC |
+| :--- | :---: | :---: |
+| **Traditional SR** | 0.6818 | 0.6843 |
+| **PSNR SR** | 0.7680 | 0.8152 |
+| **GAN SR** | 0.4017 | 0.6441 |
+| **Overall Dataset** | 0.5866 | 0.6108 |
 
 ## No Heavy Dependencies
 Built only on **NumPy**, **SciPy**, and **Pillow**. No need for OpenCV or PyTorch.

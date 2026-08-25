@@ -28,10 +28,10 @@ While based on the original research by Wang and Li, simple-iw-ssim introduces s
 
 | Category | SRCC | PLCC |
 | :--- | :---: | :---: |
-| **Traditional SR** | 0.6818 | 0.6843 |
-| **PSNR SR** | 0.7680 | 0.8152 |
-| **GAN SR** | 0.4017 | 0.6441 |
-| **Overall Dataset** | 0.5866 | 0.6108 |
+| **Traditional SR** | 0.6827 | 0.6853 |
+| **PSNR SR** | 0.7689 | 0.8157 |
+| **GAN SR** | 0.4020 | 0.6451 |
+| **Overall Dataset** | 0.5867 | 0.6104 |
 
 ## No Heavy Dependencies
 Built only on **NumPy**, **SciPy**, and **Pillow**. No need for OpenCV or PyTorch.

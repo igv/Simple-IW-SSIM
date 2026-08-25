@@ -26,7 +26,7 @@ def get_structure_tensor(H, Parent, sd, t):
     l1, l2 = trace / 2.0 + delta, trace / 2.0 - delta
 
     coherence = (l1 - l2) / (l1 + l2 + 1e-3)
-    weight = coherence ** 2
+    weight = 1.4142 * coherence ** 3
 
     return l1 * weight, l2 * weight
 

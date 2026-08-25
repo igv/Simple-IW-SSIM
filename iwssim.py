@@ -80,25 +80,23 @@ def gaussian_pyramid(image_linear, levels=6, luma_only=False):
 
     return gpyr_L, gpyr_a, gpyr_b
 
-def laplacian_pyramid(G_pyr, levels=5):
+def laplacian_pyramid(G_pyr, start_level=0, levels=5):
     L_pyr = []
-    for s in range(levels):
+    for s in range(start_level, levels):
         l, l2 = G_pyr[s], G_pyr[s+1]
         h, w = l.shape
         h2, w2 = l2.shape
         exp = np.zeros((h, w), dtype=l.dtype)
         exp[0:min(h, h2*2):2, 0:min(w, w2*2):2] = l2[0:(h+1)//2, 0:(w+1)//2]
         upsampled = gaussian_filter(exp, sigma=1.08, truncate=1.5) * 4.0
-        H = l - upsampled
-        L_pyr.append(H)
+        L_pyr.append(l - upsampled)
     return L_pyr
 
 def compute_ssim_maps(lpyr1, lpyr2, gpyr1, gpyr2, sd=1.5, t=2.5, dyn_range=100.0):
     cs_maps = []
     C1 = (0.01 * dyn_range) ** 2
     C2 = (0.03 * dyn_range) ** 2
-    for scale in range(1, 6):
-        H1, H2 = lpyr1[scale-1], lpyr2[scale-1]
+    for H1, H2 in zip(lpyr1, lpyr2):
         mu1 = gaussian_filter(H1, sd, truncate=t)
         mu2 = gaussian_filter(H2, sd, truncate=t)
         sigma1_sq = np.maximum(0, gaussian_filter(H1 * H1, sd, truncate=t) - mu1 ** 2)
@@ -156,25 +154,26 @@ def compute_iw_maps(lpyr1, lpyr2, sd=1.2, t=2.0):
 
 def compute_channel_iwssim(gpyr1, gpyr2, lpyr1, lpyr2, iw_maps, dyn_range=100.0, is_chroma=False):
     cs_maps, l_map = compute_ssim_maps(lpyr1, lpyr2, gpyr1, gpyr2, dyn_range=dyn_range)
+    weights = CHROMA_WEIGHTS if is_chroma else WEIGHTS
+    start_level = int(np.flatnonzero(weights)[0])
     wmcs = []
 
-    for scale in range(1, 6):
-        cs = cs_maps[scale-1]
-        if scale == 5:
+    for i, cs in enumerate(cs_maps):
+        scale_idx = start_level + i
+        if scale_idx == 4:
             cs *= l_map
             iw = np.ones_like(cs)
         else:
-            iw = iw_maps[scale-1]
+            iw = iw_maps[scale_idx]
 
         crop = 1
         cs_crop = cs[crop:-crop, crop:-crop]
         iw_crop = iw[crop:-crop, crop:-crop]
 
         val = np.sum(cs_crop * iw_crop) / np.sum(iw_crop)
-        wmcs.append(np.clip(val, 0.0, 1.0))
+        wmcs.append(np.clip(val, 0.0, 1.0) ** weights[scale_idx])
 
-    weights = CHROMA_WEIGHTS if is_chroma else WEIGHTS
-    return np.prod(np.array(wmcs) ** weights)
+    return np.prod(wmcs)
 
 def iwssim(file1, file2, luma_only=False):
     img1 = np.array(Image.open(file1).convert('RGB'), dtype=np.float32) / 255.0
@@ -199,10 +198,13 @@ def iwssim(file1, file2, luma_only=False):
     if luma_only:
         return score_L
 
-    lpyr_a1, lpyr_a2 = laplacian_pyramid(gpyr_a1), laplacian_pyramid(gpyr_a2)
+    chroma_start = int(np.flatnonzero(CHROMA_WEIGHTS)[0])
+    lpyr_a1 = laplacian_pyramid(gpyr_a1, start_level=chroma_start)
+    lpyr_a2 = laplacian_pyramid(gpyr_a2, start_level=chroma_start)
     score_a = compute_channel_iwssim(gpyr_a1, gpyr_a2, lpyr_a1, lpyr_a2, iw_maps_L, dyn_range=100.0, is_chroma=True)
 
-    lpyr_b1, lpyr_b2 = laplacian_pyramid(gpyr_b1), laplacian_pyramid(gpyr_b2)
+    lpyr_b1 = laplacian_pyramid(gpyr_b1, start_level=chroma_start)
+    lpyr_b2 = laplacian_pyramid(gpyr_b2, start_level=chroma_start)
     score_b = compute_channel_iwssim(gpyr_b1, gpyr_b2, lpyr_b1, lpyr_b2, iw_maps_L, dyn_range=100.0, is_chroma=True)
 
     return 0.9 * score_L + 0.05 * score_a + 0.05 * score_b
